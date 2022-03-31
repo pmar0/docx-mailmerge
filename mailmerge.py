@@ -243,7 +243,7 @@ class MailMerge(object):
                                         nbreak.attrib['{%(w)s}type' % NAMESPACES] = type
                                         r.append(nbreak)
 
-                    self.merge(parts, **repl)
+                self.merge(parts, **repl)
 
     def merge_pages(self, replacements):
          """
