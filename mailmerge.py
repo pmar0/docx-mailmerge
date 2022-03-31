@@ -152,7 +152,7 @@ class MailMerge(object):
         """
         Duplicate template. Creates a copy of the template, does a merge, and separates them by a new paragraph, a new break or a new section break.
         separator must be :
-        - page_break : Page Break. 
+        - page_break : Page Break.
         - column_break : Column Break. ONLY HAVE EFFECT IF DOCUMENT HAVE COLUMNS
         - textWrapping_break : Line Break.
         - continuous_section : Continuous section break. Begins the section on the next paragraph.
@@ -245,6 +245,113 @@ class MailMerge(object):
 
                     self.merge(parts, **repl)
 
+    def merge_labels(self, replacements, separator, num_labels):
+        """
+        Duplicate template. Creates a copy of the template, does a merge, and separates them by a new paragraph, a new break or a new section break.
+        separator must be :
+        - page_break : Page Break.
+        - column_break : Column Break. ONLY HAVE EFFECT IF DOCUMENT HAVE COLUMNS
+        - textWrapping_break : Line Break.
+        - continuous_section : Continuous section break. Begins the section on the next paragraph.
+        - evenPage_section : evenPage section break. section begins on the next even-numbered page, leaving the next odd page blank if necessary.
+        - nextColumn_section : nextColumn section break. section begins on the following column on the page. ONLY HAVE EFFECT IF DOCUMENT HAVE COLUMNS
+        - nextPage_section : nextPage section break. section begins on the following page.
+        - oddPage_section : oddPage section break. section begins on the next odd-numbered page, leaving the next even page blank if necessary.
+        """
+
+        #TYPE PARAM CONTROL AND SPLIT
+        valid_separators = {'page_break', 'column_break', 'textWrapping_break', 'continuous_section', 'evenPage_section', 'nextColumn_section', 'nextPage_section', 'oddPage_section'}
+        if not separator in valid_separators:
+            raise ValueError("""Invalid separator argument, please choose from the following:\n
+                            page_break, column_break, textWrapping_break, continuous_section, evenPage_section,
+                            nextColumn_section, nextPage_section, oddPage_section""")
+        sepType, sepClass = separator.split("_")
+        
+        if (type(num_labels) != int) or not (num_labels > 0):
+            raise TypeError("Please input a positive integer value for \'num_labels\'")
+
+        #GET ROOT - WORK WITH DOCUMENT
+        for part in self.parts.values():
+            root = part.getroot()
+            tag = root.tag
+            if tag == '{%(w)s}ftr' % NAMESPACES or tag == '{%(w)s}hdr' % NAMESPACES:
+                continue
+        
+            if sepClass == 'section':
+
+                #FINDING FIRST SECTION OF THE DOCUMENT
+                firstSection = root.find("w:body/w:p/w:pPr/w:sectPr", namespaces=NAMESPACES)
+                if firstSection == None:
+                    firstSection = root.find("w:body/w:sectPr", namespaces=NAMESPACES)
+                
+                #MODIFY TYPE ATTRIBUTE OF FIRST SECTION FOR MERGING
+                nextPageSec = deepcopy(firstSection)
+                for child in nextPageSec:
+                #Delete old type if exist
+                    if child.tag == '{%(w)s}type' % NAMESPACES:
+                        nextPageSec.remove(child)
+                #Create new type (def parameter)
+                newType = etree.SubElement(nextPageSec, '{%(w)s}type'  % NAMESPACES)
+                newType.set('{%(w)s}val'  % NAMESPACES, sepType)
+
+                #REPLACING FIRST SECTION
+                secRoot = firstSection.getparent()
+                secRoot.replace(firstSection, nextPageSec)
+
+            #FINDING LAST SECTION OF THE DOCUMENT
+            lastSection = root.find("w:body/w:sectPr", namespaces=NAMESPACES)
+
+            #SAVING LAST SECTION
+            mainSection = deepcopy(lastSection)
+            lsecRoot = lastSection.getparent()
+            lsecRoot.remove(lastSection)
+
+            #COPY CHILDREN ELEMENTS OF BODY IN A LIST
+            childrenList = root.findall('w:body/*', namespaces=NAMESPACES)
+
+            #DELETE ALL CHILDREN OF BODY
+            for child in root:
+                if child.tag == '{%(w)s}body' % NAMESPACES:
+                    child.clear()
+
+            #REFILL BODY AND MERGE DOCS - ADD LAST SECTION ENCAPSULATED OR NOT
+            lr = len(replacements)
+            lc = len(childrenList)
+            #my janky way of rounding up the amount of pages needed for all of the replacement data
+            if lr % num_labels == 0:
+                num_pages = int(lr / num_labels)
+            else:
+                num_pages = int(lr / num_labels) + 1
+            parts = []
+    
+            for i in range(0,num_pages):
+                for (j, el) in enumerate(childrenList):
+                    element = deepcopy(el)
+                    for child in root:
+                        if child.tag == '{%(w)s}body' % NAMESPACES:
+                            child.append(element)
+                            parts.append(element)
+                            if (j + 1) == lc:
+                                if (i+1) == num_pages:
+                                    child.append(mainSection)
+                                    parts.append(mainSection)
+                                else:
+                                    if sepClass == 'section':
+                                        intSection = deepcopy(mainSection)
+                                        p   = etree.SubElement(child, '{%(w)s}p'  % NAMESPACES)
+                                        pPr = etree.SubElement(p, '{%(w)s}pPr'  % NAMESPACES)
+                                        pPr.append(intSection)
+                                        parts.append(p)
+                                    elif sepClass == 'break':
+                                        pb   = etree.SubElement(child, '{%(w)s}p'  % NAMESPACES)
+                                        r = etree.SubElement(pb, '{%(w)s}r'  % NAMESPACES)
+                                        nbreak = Element('{%(w)s}br' % NAMESPACES)
+                                        nbreak.attrib['{%(w)s}type' % NAMESPACES] = sepType
+                                        r.append(nbreak)
+
+            self.__merge_field_labels(parts,replacements)
+
+
     def merge_pages(self, replacements):
          """
          Deprecated method.
@@ -295,6 +402,48 @@ class MailMerge(object):
                 mf.remove(ph)
             else:
                 mf.extend(nodes)
+
+    def __merge_field_labels(self, parts, replacements):
+        merge_field_count = len(self.get_merge_fields())
+        lr = len(replacements)
+        current_mf = 0
+        # './/MergeField[@name="%s"]' % field
+        for part in parts:
+            for mf in part.findall('.//MergeField'):
+                current_label = int(current_mf/merge_field_count)+1
+                if current_label > lr:
+                    return
+                children = list(mf)
+                mf_attribute = mf.attrib['name'] # save attribute field
+                mf.clear()  # clear away the attributes
+                mf.tag = '{%(w)s}r' % NAMESPACES
+                mf.extend(children)
+
+                nodes = []
+                # preserve new lines in replacement text
+                text = replacements[current_label-1][mf_attribute] or ''  # text might be None
+                text_parts = str(text).replace('\r', '').split('\n')
+                for j, text_part in enumerate(text_parts):
+                    text_node = Element('{%(w)s}t' % NAMESPACES)
+                    text_node.text = text_part
+                    nodes.append(text_node)
+
+                    # if not last node add new line node
+                    if j < (len(text_parts) - 1):
+                        nodes.append(Element('{%(w)s}br' % NAMESPACES))
+
+                ph = mf.find('MergeText')
+                if ph is not None:
+                    # add text nodes at the exact position where
+                    # MergeText was found
+                    index = mf.index(ph)
+                    for node in reversed(nodes):
+                        mf.insert(index, node)
+                    mf.remove(ph)
+                else:
+                    mf.extend(nodes)
+                
+                current_mf += 1
 
     def merge_rows(self, anchor, rows):
         table, idx, template = self.__find_row_anchor(anchor)
