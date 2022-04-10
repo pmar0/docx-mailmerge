@@ -4,12 +4,14 @@ from lxml.etree import Element
 from lxml import etree
 from zipfile import ZipFile, ZIP_DEFLATED
 import shlex
+import math
 
 
 NAMESPACES = {
     'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
     'mc': 'http://schemas.openxmlformats.org/markup-compatibility/2006',
     'ct': 'http://schemas.openxmlformats.org/package/2006/content-types',
+    'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 }
 
 CONTENT_TYPES_PARTS = (
@@ -25,6 +27,7 @@ class MailMerge(object):
     def __init__(self, file, remove_empty_tables=False):
         self.zip = ZipFile(file)
         self.parts = {}
+        self.duplicate_id_map = {'max': -math.inf, 'values': set()} # {'max': max_id, 'values': set(existing_ids)}
         self.settings = None
         self._settings_info = None
         self.remove_empty_tables = remove_empty_tables
@@ -245,7 +248,7 @@ class MailMerge(object):
 
                 self.merge(parts, **repl)
 
-    def merge_labels(self, replacements, separator, num_labels):
+    def merge_labels(self, replacements, separator, labels_per_page):
         """
         Duplicate template. Creates a copy of the template, does a merge, and separates them by a new paragraph, a new break or a new section break.
         separator must be :
@@ -267,8 +270,8 @@ class MailMerge(object):
                             nextColumn_section, nextPage_section, oddPage_section""")
         sepType, sepClass = separator.split("_")
 
-        if (type(num_labels) != int) or not (num_labels > 0):
-            raise TypeError("Please input a positive integer value for \'num_labels\'")
+        if (type(labels_per_page) != int) or not (labels_per_page > 0):
+            raise TypeError("Please input a positive integer value for \'labels_per_page\'")
 
         #GET ROOT - WORK WITH DOCUMENT
         for part in self.parts.values():
@@ -278,7 +281,6 @@ class MailMerge(object):
                 continue
 
             if sepClass == 'section':
-
                 #FINDING FIRST SECTION OF THE DOCUMENT
                 firstSection = root.find("w:body/w:p/w:pPr/w:sectPr", namespaces=NAMESPACES)
                 if firstSection == None:
@@ -317,11 +319,8 @@ class MailMerge(object):
             #REFILL BODY AND MERGE DOCS - ADD LAST SECTION ENCAPSULATED OR NOT
             lr = len(replacements)
             lc = len(childrenList)
-            #my janky way of rounding up the amount of pages needed for all of the replacement data
-            if lr % num_labels == 0:
-                num_pages = int(lr / num_labels)
-            else:
-                num_pages = int(lr / num_labels) + 1
+            #Round up the amount of pages needed for all of the replacement data
+            num_pages = math.ceil(lr / labels_per_page)
             parts = []
 
             for i in range(0,num_pages):
@@ -350,6 +349,7 @@ class MailMerge(object):
                                         r.append(nbreak)
 
             self.__merge_field_labels(parts,replacements)
+            self.__fix_pics(parts)
 
     def merge_pages(self, replacements):
          """
@@ -409,7 +409,7 @@ class MailMerge(object):
         # './/MergeField[@name="%s"]' % field
         for part in parts:
             for mf in part.findall('.//MergeField'):
-                current_label = int(current_mf/merge_field_count)+1
+                current_label = int(current_mf/merge_field_count) + 1
                 if current_label > lr:
                     return
                 children = list(mf)
@@ -444,6 +444,61 @@ class MailMerge(object):
 
                 current_mf += 1
 
+    def __fix_pics(self, parts):
+        # './/MergeField[@name="%s"]' % field
+        for part in parts:
+            for docpr in part.findall('.//{%(wp)s}docPr' % NAMESPACES):
+                # print(etree.tostring(docpr.tag))
+                # print('id',docpr.get('id'))
+                element_id = docpr.get('id')
+                if element_id == None:
+                    continue
+
+                element_id = int(element_id)
+                #assigning a dict referenced via self and then modifying the local data will modify the self dict
+                id_data = self.duplicate_id_map
+                # if id already exists
+                if element_id in id_data['values']:
+                    element_id = id_data['max'] + 1
+                    id_data['values'].add(element_id)
+                    id_data['max'] = element_id
+                    docpr.set('id', str(element_id))
+                    docpr.set('name', 'Picture %s' % element_id)
+
+                id_data['values'].add(element_id)
+                id_data['max'] = max(element_id, id_data['max'])
+
+                
+                # print(docpr.attrib)
+                # print(etree.tostring(pic,pretty_print =True))
+                # mf_attribute = mf.attrib['name'] # save attribute field
+                # mf.clear()  # clear away the attributes
+                # mf.tag = '{%(w)s}r' % NAMESPACES
+                # mf.extend(children)
+
+                # nodes = []
+                # # preserve new lines in replacement text
+                # text = replacements[current_label-1][mf_attribute] or ''  # text might be None
+                # text_parts = str(text).replace('\r', '').split('\n')
+                # for j, text_part in enumerate(text_parts):
+                #     text_node = Element('{%(w)s}t' % NAMESPACES)
+                #     text_node.text = text_part
+                #     nodes.append(text_node)
+
+                #     # if not last node add new line node
+                #     if j < (len(text_parts) - 1):
+                #         nodes.append(Element('{%(w)s}br' % NAMESPACES))
+
+                # ph = mf.find('MergeText')
+                # if ph is not None:
+                #     # add text nodes at the exact position where
+                #     # MergeText was found
+                #     index = mf.index(ph)
+                #     for node in reversed(nodes):
+                #         mf.insert(index, node)
+                #     mf.remove(ph)
+                # else:
+                #     mf.extend(nodes)
 
     def merge_rows(self, anchor, rows):
         table, idx, template = self.__find_row_anchor(anchor)
