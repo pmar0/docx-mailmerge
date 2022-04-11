@@ -22,6 +22,7 @@ CONTENT_TYPES_PARTS = (
 
 CONTENT_TYPE_SETTINGS = 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml'
 
+NEXT_RECORD = 'NextRecordRule'
 
 class MailMerge(object):
     def __init__(self, file, remove_empty_tables=False):
@@ -54,6 +55,7 @@ class MailMerge(object):
                         name = self.__parse_instr(instr)
                         if name is None:
                             continue
+
                         parent[idx] = Element('MergeField', name=name)
 
                 for parent in part.findall('.//{%(w)s}instrText/../..' % NAMESPACES):
@@ -64,7 +66,6 @@ class MailMerge(object):
                         [children.index(e) for e in
                          parent.findall('{%(w)s}r/{%(w)s}fldChar[@{%(w)s}fldCharType="end"]/..' % NAMESPACES)]
                     )
-
                     for idx_begin, idx_end in fields:
                         # consolidate all instrText nodes between'begin' and 'end' into a single node
                         begin = children[idx_begin]
@@ -86,9 +87,8 @@ class MailMerge(object):
                         name = self.__parse_instr(instr_text)
                         if name is None:
                             continue
-
+                        
                         parent[idx_begin] = Element('MergeField', name=name)
-
                         # use this so we know *where* to put the replacement
                         instr_elements[0].tag = 'MergeText'
                         block = instr_elements[0].getparent()
@@ -114,8 +114,10 @@ class MailMerge(object):
     @classmethod
     def __parse_instr(cls, instr):
         args = shlex.split(instr, posix=False)
-        if args[0] != 'MERGEFIELD':
+        if args[0] != 'MERGEFIELD' and args[0] != 'NEXT':
             return None
+        if args[0] == 'NEXT':
+            return NEXT_RECORD
         name = args[1]
         if name[0] == '"' and name[-1] == '"':
             name = name[1:-1]
@@ -270,7 +272,7 @@ class MailMerge(object):
                             nextColumn_section, nextPage_section, oddPage_section""")
         sepType, sepClass = separator.split("_")
 
-        if (type(labels_per_page) != int) or not (labels_per_page > 0):
+        if (type(labels_per_page) != int) or labels_per_page <= 0:
             raise TypeError("Please input a positive integer value for \'labels_per_page\'")
 
         #GET ROOT - WORK WITH DOCUMENT
@@ -348,7 +350,7 @@ class MailMerge(object):
                                         nbreak.attrib['{%(w)s}type' % NAMESPACES] = sepType
                                         r.append(nbreak)
 
-            self.__merge_field_labels(parts,replacements)
+            self.__merge_field_labels(parts,replacements,labels_per_page)
             self.__fix_pics(parts)
 
     def merge_pages(self, replacements):
@@ -402,25 +404,33 @@ class MailMerge(object):
             else:
                 mf.extend(nodes)
     
-    def __merge_field_labels(self, parts, replacements):
-        merge_field_count = len(self.get_merge_fields())
+    def __merge_field_labels(self, parts, replacements, labels_per_page):
+        # merge_field_count = len(self.get_merge_fields())
         lr = len(replacements)
-        current_mf = 0
+        current_label = 0
         # './/MergeField[@name="%s"]' % field
         for part in parts:
+            if (current_label + 1) % labels_per_page == 0:
+                current_label += 1
             for mf in part.findall('.//MergeField'):
-                current_label = int(current_mf/merge_field_count) + 1
-                if current_label > lr:
-                    return
-                children = list(mf)
+                # current_label = int(current_mf/merge_field_count) + 1
                 mf_attribute = mf.attrib['name'] # save attribute field
+                if mf_attribute == NEXT_RECORD:
+                    mf_parent = mf.getparent()
+                    mf_parent.remove(mf)
+                    current_label += 1
+                    continue
+                if current_label >= lr:
+                    return
+
+                children = list(mf)
                 mf.clear()  # clear away the attributes
                 mf.tag = '{%(w)s}r' % NAMESPACES
                 mf.extend(children)
 
                 nodes = []
                 # preserve new lines in replacement text
-                text = replacements[current_label-1][mf_attribute] or ''  # text might be None
+                text = replacements[current_label][mf_attribute] or ''  # text might be None
                 text_parts = str(text).replace('\r', '').split('\n')
                 for j, text_part in enumerate(text_parts):
                     text_node = Element('{%(w)s}t' % NAMESPACES)
@@ -442,7 +452,7 @@ class MailMerge(object):
                 else:
                     mf.extend(nodes)
 
-                current_mf += 1
+                # current_mf += 1
 
     def __fix_pics(self, parts):
         # './/MergeField[@name="%s"]' % field
