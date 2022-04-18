@@ -29,6 +29,7 @@ class MailMerge(object):
         self.zip = ZipFile(file)
         self.parts = {}
         self.duplicate_id_map = {'max': -math.inf, 'values': set()} # {'max': max_id, 'values': set(existing_ids)}
+        self._body_copy = None
         self.settings = None
         self._settings_info = None
         self.remove_empty_tables = remove_empty_tables
@@ -250,7 +251,7 @@ class MailMerge(object):
 
                 self.merge(parts, **repl)
 
-    def merge_labels(self, replacements, separator, labels_per_page):
+    def merge_labels(self, replacements, separator):
         """
         Duplicate template. Creates a copy of the template, does a merge, and separates them by a new paragraph, a new break or a new section break.
         separator must be :
@@ -271,9 +272,6 @@ class MailMerge(object):
                             page_break, column_break, textWrapping_break, continuous_section, evenPage_section,
                             nextColumn_section, nextPage_section, oddPage_section""")
         sepType, sepClass = separator.split("_")
-
-        if (type(labels_per_page) != int) or labels_per_page <= 0:
-            raise TypeError("Please input a positive integer value for \'labels_per_page\'")
 
         #GET ROOT - WORK WITH DOCUMENT
         for part in self.parts.values():
@@ -307,11 +305,11 @@ class MailMerge(object):
 
             #SAVING LAST SECTION
             mainSection = deepcopy(lastSection)
-            lsecRoot = lastSection.getparent()
-            lsecRoot.remove(lastSection)
+            root_body = lastSection.getparent()
+            root_body.remove(lastSection)
 
-            #COPY CHILDREN ELEMENTS OF BODY IN A LIST
-            childrenList = root.findall('w:body/*', namespaces=NAMESPACES)
+            #save copy of body contents without lastSection
+            self._body_copy = deepcopy(root_body)
 
             #DELETE ALL CHILDREN OF BODY
             for child in root:
@@ -320,38 +318,35 @@ class MailMerge(object):
 
             #REFILL BODY AND MERGE DOCS - ADD LAST SECTION ENCAPSULATED OR NOT
             lr = len(replacements)
-            lc = len(childrenList)
-            #Round up the amount of pages needed for all of the replacement data
-            num_pages = math.ceil(lr / labels_per_page)
-            parts = []
+            label_count = 0
 
-            for i in range(0,num_pages):
-                for (j, el) in enumerate(childrenList):
-                    element = deepcopy(el)
-                    for child in root:
-                        if child.tag == '{%(w)s}body' % NAMESPACES:
-                            child.append(element)
-                            parts.append(element)
-                            if (j + 1) == lc:
-                                if (i+1) == num_pages:
-                                    child.append(mainSection)
-                                    parts.append(mainSection)
-                                else:
-                                    if sepClass == 'section':
-                                        intSection = deepcopy(mainSection)
-                                        p   = etree.SubElement(child, '{%(w)s}p'  % NAMESPACES)
-                                        pPr = etree.SubElement(p, '{%(w)s}pPr'  % NAMESPACES)
-                                        pPr.append(intSection)
-                                        parts.append(p)
-                                    elif sepClass == 'break':
-                                        pb   = etree.SubElement(child, '{%(w)s}p'  % NAMESPACES)
-                                        r = etree.SubElement(pb, '{%(w)s}r'  % NAMESPACES)
-                                        nbreak = Element('{%(w)s}br' % NAMESPACES)
-                                        nbreak.attrib['{%(w)s}type' % NAMESPACES] = sepType
-                                        r.append(nbreak)
+            while label_count < lr:
+                parts = []
+                body_copy = deepcopy(self._body_copy)
 
-            self.__merge_field_labels(parts,replacements,labels_per_page)
-            self.__fix_pics(parts)
+                for part in body_copy:
+                    root_body.append(part)
+                    parts.append(part)
+                label_count = self.__merge_field_labels(parts,replacements,label_count)
+                if (label_count + 1) >= lr:
+                    root_body.append(mainSection)
+                    parts.append(mainSection)
+                else:
+                    if sepClass == 'section':
+                        intSection = deepcopy(mainSection)
+                        p   = etree.SubElement(root_body, '{%(w)s}p'  % NAMESPACES)
+                        pPr = etree.SubElement(p, '{%(w)s}pPr'  % NAMESPACES)
+                        pPr.append(intSection)
+                        parts.append(p)
+                    elif sepClass == 'break':
+                        pb   = etree.SubElement(root_body, '{%(w)s}p'  % NAMESPACES)
+                        r = etree.SubElement(pb, '{%(w)s}r'  % NAMESPACES)
+                        nbreak = Element('{%(w)s}br' % NAMESPACES)
+                        nbreak.attrib['{%(w)s}type' % NAMESPACES] = sepType
+                        r.append(nbreak)
+                            
+                label_count += 1
+            self.__fix_pics(root.findall('w:body/*', namespaces=NAMESPACES))
 
     def merge_pages(self, replacements):
          """
@@ -404,24 +399,15 @@ class MailMerge(object):
             else:
                 mf.extend(nodes)
     
-    def __merge_field_labels(self, parts, replacements, labels_per_page):
-        # merge_field_count = len(self.get_merge_fields())
-        lr = len(replacements)
-        current_label = 0
-        # './/MergeField[@name="%s"]' % field
+    def __merge_field_labels(self, parts, replacements, current_label):
         for part in parts:
-            if (current_label + 1) % labels_per_page == 0:
-                current_label += 1
             for mf in part.findall('.//MergeField'):
-                # current_label = int(current_mf/merge_field_count) + 1
-                mf_attribute = mf.attrib['name'] # save attribute field
-                if mf_attribute == NEXT_RECORD:
+                mf_name = mf.attrib['name'] # save attribute field
+                if mf_name == NEXT_RECORD:
                     mf_parent = mf.getparent()
                     mf_parent.remove(mf)
                     current_label += 1
                     continue
-                if current_label >= lr:
-                    return
 
                 children = list(mf)
                 mf.clear()  # clear away the attributes
@@ -430,7 +416,10 @@ class MailMerge(object):
 
                 nodes = []
                 # preserve new lines in replacement text
-                text = replacements[current_label][mf_attribute] or ''  # text might be None
+                try:
+                    text = replacements[current_label][mf_name] or ''  # text might be None
+                except IndexError:
+                    return current_label
                 text_parts = str(text).replace('\r', '').split('\n')
                 for j, text_part in enumerate(text_parts):
                     text_node = Element('{%(w)s}t' % NAMESPACES)
@@ -452,14 +441,11 @@ class MailMerge(object):
                 else:
                     mf.extend(nodes)
 
-                # current_mf += 1
+        return current_label
 
     def __fix_pics(self, parts):
-        # './/MergeField[@name="%s"]' % field
         for part in parts:
             for docpr in part.findall('.//{%(wp)s}docPr' % NAMESPACES):
-                # print(etree.tostring(docpr.tag))
-                # print('id',docpr.get('id'))
                 element_id = docpr.get('id')
                 if element_id == None:
                     continue
@@ -477,38 +463,6 @@ class MailMerge(object):
 
                 id_data['values'].add(element_id)
                 id_data['max'] = max(element_id, id_data['max'])
-
-                
-                # print(docpr.attrib)
-                # print(etree.tostring(pic,pretty_print =True))
-                # mf_attribute = mf.attrib['name'] # save attribute field
-                # mf.clear()  # clear away the attributes
-                # mf.tag = '{%(w)s}r' % NAMESPACES
-                # mf.extend(children)
-
-                # nodes = []
-                # # preserve new lines in replacement text
-                # text = replacements[current_label-1][mf_attribute] or ''  # text might be None
-                # text_parts = str(text).replace('\r', '').split('\n')
-                # for j, text_part in enumerate(text_parts):
-                #     text_node = Element('{%(w)s}t' % NAMESPACES)
-                #     text_node.text = text_part
-                #     nodes.append(text_node)
-
-                #     # if not last node add new line node
-                #     if j < (len(text_parts) - 1):
-                #         nodes.append(Element('{%(w)s}br' % NAMESPACES))
-
-                # ph = mf.find('MergeText')
-                # if ph is not None:
-                #     # add text nodes at the exact position where
-                #     # MergeText was found
-                #     index = mf.index(ph)
-                #     for node in reversed(nodes):
-                #         mf.insert(index, node)
-                #     mf.remove(ph)
-                # else:
-                #     mf.extend(nodes)
 
     def merge_rows(self, anchor, rows):
         table, idx, template = self.__find_row_anchor(anchor)
