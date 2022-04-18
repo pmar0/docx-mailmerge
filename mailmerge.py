@@ -400,6 +400,7 @@ class MailMerge(object):
                 mf.extend(nodes)
     
     def __merge_field_labels(self, parts, replacements, current_label):
+        lr = len(replacements)
         for part in parts:
             for mf in part.findall('.//MergeField'):
                 mf_name = mf.attrib['name'] # save attribute field
@@ -408,6 +409,8 @@ class MailMerge(object):
                     mf_parent.remove(mf)
                     current_label += 1
                     continue
+                if current_label >= lr:
+                    return current_label
 
                 children = list(mf)
                 mf.clear()  # clear away the attributes
