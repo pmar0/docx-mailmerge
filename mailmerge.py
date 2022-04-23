@@ -145,7 +145,7 @@ class MailMerge(object):
                 else:
                     output.writestr(zi.filename, self.zip.read(zi))
 
-    def get_merge_fields(self, parts=None, ignore_next_records=False):
+    def get_merge_fields(self, parts=None, ignore_next_records=True):
         if not parts:
             parts = self.parts.values()
         fields = set()
