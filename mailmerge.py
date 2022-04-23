@@ -131,7 +131,7 @@ class MailMerge(object):
 
     def write(self, file):
         # Replace all remaining merge fields with empty values
-        for field in self.get_merge_fields():
+        for field in self.get_merge_fields(ignore_next_records=False):
             self.merge(**{field: ''})
 
         with ZipFile(file, 'w', ZIP_DEFLATED) as output:
@@ -145,12 +145,14 @@ class MailMerge(object):
                 else:
                     output.writestr(zi.filename, self.zip.read(zi))
 
-    def get_merge_fields(self, parts=None):
+    def get_merge_fields(self, parts=None, ignore_next_records=True):
         if not parts:
             parts = self.parts.values()
         fields = set()
         for part in parts:
             for mf in part.findall('.//MergeField'):
+                if ignore_next_records and mf.attrib['name'] == NEXT_RECORD:
+                    continue
                 fields.add(mf.attrib['name'])
         return fields
 
