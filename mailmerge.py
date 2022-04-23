@@ -131,7 +131,7 @@ class MailMerge(object):
 
     def write(self, file):
         # Replace all remaining merge fields with empty values
-        for field in self.get_merge_fields():
+        for field in self.get_merge_fields(ignore_next_records=False):
             self.merge(**{field: ''})
 
         with ZipFile(file, 'w', ZIP_DEFLATED) as output:
